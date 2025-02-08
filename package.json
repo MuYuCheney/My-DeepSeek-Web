@@ -1,0 +1,27 @@
+{
+  "name": "my-vue-app",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@types/dompurify": "^3.2.0",
+    "@vueuse/core": "^10.11.1",
+    "axios": "^1.7.9",
+    "dompurify": "^3.2.3",
+    "marked": "^15.0.6",
+    "pinia": "^2.3.1",
+    "vue": "^3.3.11",
+    "vue-router": "^4.5.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^4.5.2",
+    "typescript": "^5.2.2",
+    "vite": "^5.0.8",
+    "vue-tsc": "^1.8.25"
+  }
+}

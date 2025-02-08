@@ -1,0 +1,21 @@
+my-vue-app/
+├── index.html
+├── package.json
+├── tsconfig.json
+├── tsconfig.node.json
+├── vite.config.ts
+└── src/
+    ├── api/
+    │   └── index.ts
+    ├── assets/
+    │   └── vite.svg
+    ├── components/
+    ├── router/
+    │   └── index.ts
+    ├── stores/
+    │   └── index.ts
+    ├── views/
+    │   └── Home.vue
+    ├── App.vue
+    ├── main.ts
+    └── shims-vue.d.ts 
