@@ -87,9 +87,13 @@
                       <div class="icon">🔄</div>
                       深度思考
                     </button>
-                    <button class="tool-btn">
+                    <button 
+                      class="tool-btn"
+                      :class="{ 'tool-btn-active': isSearching }"
+                      @click="toggleSearch"
+                    >
                       <div class="icon">🌐</div>
-                      联网搜索
+                      {{ isSearching ? '取消搜索' : '联网搜索' }}
                     </button>
                   </div>
                   <div class="right-buttons">
@@ -136,7 +140,7 @@
                     <circle cx="12" cy="12" r="3" fill="#4b4bff" opacity="0.2" stroke="#4b4bff" stroke-width="1.5"/>
                   </svg>
                 </div>
-                <div class="message-content" v-html="renderMarkdown(message.content)"></div>
+                <div class="message-content" v-html="renderMarkdown(message.content)" @click="handleMessageClick(message, $event)"></div>
               </div>
             </div>
             <div class="chat-input-container">
@@ -158,9 +162,13 @@
                         <div class="icon">🔄</div>
                         深度思考
                       </button>
-                      <button class="tool-btn">
+                      <button 
+                        class="tool-btn"
+                        :class="{ 'tool-btn-active': isSearching }"
+                        @click="toggleSearch"
+                      >
                         <div class="icon">🌐</div>
-                        联网搜索
+                        {{ isSearching ? '取消搜索' : '联网搜索' }}
                       </button>
                     </div>
                     <div class="right-buttons">
@@ -188,6 +196,53 @@
               <div class="disclaimer-text">内容由 AI 生成，请仔细甄别</div>
             </div>
           </div>
+        </div>
+      </div>
+
+      <!-- 添加搜索结果面板 -->
+      <div v-if="showSearchPanel" class="search-panel">
+        <div class="search-panel-header">
+          <h3>搜索结果</h3>
+          <button class="close-btn" @click="showSearchPanel = false">
+            <span>×</span>
+          </button>
+        </div>
+        <div class="search-results-list">
+          <div v-for="(result, index) in searchResults" 
+               :key="index"
+               class="search-result-item"
+               :class="{ active: result.isExpanded }">
+            <div class="result-header" @click="toggleResultExpand(result)">
+              <div class="result-source">
+                <img :src="getSourceIcon(result.source)" class="source-icon" />
+                <span class="source-name">{{ result.source }}</span>
+                <span class="result-date">{{ result.date }}</span>
+              </div>
+              <div class="result-title">{{ result.title }}</div>
+            </div>
+            <div v-if="result.isExpanded" class="result-content">
+              <div class="result-snippet">{{ result.snippet }}</div>
+              <a :href="result.url" target="_blank" class="result-link" @click.stop>查看原文</a>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 添加搜索结果详情面板 -->
+      <div v-if="selectedResult" class="result-detail-panel">
+        <div class="detail-header">
+          <button class="back-btn" @click="selectedResult = null">
+            <span>←</span>
+          </button>
+          <h3>{{ selectedResult.title }}</h3>
+        </div>
+        <div class="detail-content">
+          <div class="detail-meta">
+            <span class="detail-source">{{ selectedResult.source }}</span>
+            <span class="detail-date">{{ selectedResult.date }}</span>
+          </div>
+          <div class="detail-text">{{ selectedResult.snippet }}</div>
+          <a :href="selectedResult.url" target="_blank" class="detail-link">查看原文</a>
         </div>
       </div>
     </div>
@@ -235,6 +290,7 @@
     }
     hasDetails?: boolean
     showDetails?: boolean
+    isSearching?: boolean
   }
 
   interface ChatHistory {
@@ -242,6 +298,23 @@
     title: string
     time: Date
     messages: ChatMessage[]
+  }
+
+  interface SearchResult {
+    title: string
+    url: string
+    snippet: string
+    date: string
+    source: string
+    isExpanded?: boolean
+  }
+
+  interface SearchResponse {
+    type: 'search_results'
+    total: number
+    query: string
+    results: SearchResult[]
+    error?: string
   }
 
   const userInput = ref('')
@@ -254,6 +327,10 @@
   const ws = ref<WebSocket | null>(null)
   const isDeepThinking = ref(false)
   const thinkStartTime = ref<number | null>(null)
+  const isSearching = ref(false)
+  const searchResults = ref<SearchResult[]>([])
+  const showSearchPanel = ref(false)
+  const selectedResult = ref<SearchResult | null>(null)
 
   const scrollToBottom = async () => {
     await nextTick()
@@ -310,13 +387,24 @@
     userInput.value = ''
 
     // 添加 AI 回复消息
-    messages.value.push({
-      role: 'assistant',
-      content: ''
-    })
+    if (isSearching.value) {
+      // 添加搜索状态消息
+      messages.value.push({
+        role: 'assistant',
+        content: '<div class="search-loading-container"><div class="search-loading-text">🔍 正在联网检索...</div></div>',
+        isSearching: true
+      })
+    } else {
+      // 添加普通消息
+      messages.value.push({
+        role: 'assistant',
+        content: '',
+        isSearching: false
+      })
+    }
 
     try {
-      const endpoint = isDeepThinking.value ? '/reason' : '/chat'
+      const endpoint = isSearching.value ? '/search' : isDeepThinking.value ? '/reason' : '/chat'
       const response = await fetch(`http://localhost:8000${endpoint}`, {
         method: 'POST',
         headers: {
@@ -343,6 +431,12 @@
       let currentListItem = ''
       let currentListItemContent = ''
       let isInOrderedList = false
+      let isInSearchResult = false
+      let currentSearchResult = {
+        title: '',
+        url: '',
+        snippet: ''
+      }
 
       while (true) {
         const { done, value } = await reader.read()
@@ -357,7 +451,19 @@
           const content = line.slice(6).trim()
           if (!content) continue
           
-          // 处理思考块
+          try {
+            // 尝试解析为 JSON
+            const data = JSON.parse(content)
+            if (data.type === 'search_results') {
+              // 处理搜索结果
+              handleSearchResults(data.results)
+              continue
+            }
+          } catch (e) {
+            // 不是 JSON，按普通内容处理
+          }
+          
+          // 处理普通内容
           if (content === '<think>') {
             isInThinkBlock = true
             thinkStartTime.value = Date.now()
@@ -436,9 +542,8 @@
             }
           }
 
-          // 更新消息内容
-          const currentMessage = messages.value[messages.value.length - 1]
-          currentMessage.content = currentContent
+          // 使用handleStreamResponse更新消息内容
+          handleStreamResponse(currentContent)
           await scrollToBottom()
         }
       }
@@ -477,11 +582,11 @@
     try {
       marked.setOptions({
         gfm: true,
-        breaks: true
+        breaks: true,
+        async: false  // 强制同步处理
       })
 
-      // 使用 marked.parse 而不是 marked
-      const html = marked.parse(content)
+      const html = marked.parse(content) as string  // 显式类型转换
       return DOMPurify.sanitize(html)
     } catch (e) {
       console.error('Markdown parsing error:', e)
@@ -495,6 +600,14 @@
 
   const toggleDeepThinking = () => {
     isDeepThinking.value = !isDeepThinking.value
+  }
+
+  const toggleSearch = () => {
+    isSearching.value = !isSearching.value
+    if (!isSearching.value) {
+      // 如果取消搜索，重置状态
+      isDeepThinking.value = false
+    }
   }
 
   // 监听消息变化
@@ -514,6 +627,67 @@
     ws.value?.close()
     window.removeEventListener('resize', scrollToBottom)
   })
+
+  // 添加获取图标的方法
+  const getSourceIcon = (source: string) => {
+    // 这里可以根据不同来源返回不同的图标URL
+    return `https://www.google.com/s2/favicons?domain=${source}`
+  }
+
+  // 修改处理搜索结果的逻辑
+  const handleSearchResults = (results: SearchResult[]) => {
+    searchResults.value = results.map(result => ({
+      ...result,
+      date: new Date().toLocaleDateString('zh-CN'),
+      source: new URL(result.url).hostname,
+      isExpanded: false
+    }))
+    
+    // 不自动显示搜索面板
+    showSearchPanel.value = false
+
+    // 找到最后一条消息
+    const lastMessage = messages.value[messages.value.length - 1]
+    if (lastMessage && lastMessage.isSearching) {
+      // 更新搜索状态消息为完成状态，并预留空间给模型回复
+      lastMessage.content = `<div class="search-loading-container">
+        <div class="search-loading-text">🔍 联网检索完成，点击查看结果</div>
+      </div>
+      <div class="model-response"></div>`
+      
+      // 不再创建新消息，而是在现有消息中追加内容
+      lastMessage.isSearching = false
+    }
+  }
+
+  // 修改处理流式响应的部分
+  const handleStreamResponse = (content: string) => {
+    const lastMessage = messages.value[messages.value.length - 1]
+    const modelResponseDiv = lastMessage.content.indexOf('<div class="model-response">')
+    
+    if (modelResponseDiv !== -1) {
+      // 如果存在搜索结果按钮，将新内容追加到 model-response div 中
+      const beforeResponse = lastMessage.content.slice(0, modelResponseDiv + '<div class="model-response">'.length)
+      lastMessage.content = beforeResponse + renderMarkdown(content) + '</div>'
+    } else {
+      // 如果是普通消息，直接更新内容
+      lastMessage.content = content
+    }
+  }
+
+  // 添加切换展开状态的方法
+  const toggleResultExpand = (result: SearchResult) => {
+    result.isExpanded = !result.isExpanded
+  }
+
+  // 修改消息点击事件处理
+  const handleMessageClick = (message: ChatMessage, event: MouseEvent) => {
+    // 检查点击的元素是否包含搜索完成的文本
+    const clickedElement = event.target as HTMLElement;
+    if (clickedElement.closest('.search-loading-container')) {
+      showSearchPanel.value = true;
+    }
+  }
   </script>
   
   <style>
@@ -1129,6 +1303,17 @@
       margin: 0.5em 0;
     }
 
+    a {
+      color: #ff4b4b;
+      text-decoration: none;
+      transition: all 0.2s ease;
+    }
+
+    a:hover {
+      text-decoration: underline;
+      opacity: 0.8;
+    }
+
     ul, ol {
       color: #fff;
       margin: 0.5em 0;
@@ -1173,5 +1358,323 @@
 
   .expand-btn:hover {
     color: #fff;
+  }
+
+  /* 搜索结果样式 */
+  .search-result {
+    background: rgba(75, 75, 255, 0.05);
+    border: 1px solid rgba(75, 75, 255, 0.1);
+    border-radius: 8px;
+    padding: 16px;
+    margin: 12px 0;
+    transition: all 0.2s ease;
+  }
+
+  .search-result:hover {
+    background: rgba(75, 75, 255, 0.1);
+    border-color: rgba(75, 75, 255, 0.2);
+  }
+
+  .search-title {
+    color: #4b4bff;
+    font-size: 16px;
+    font-weight: 500;
+    text-decoration: none;
+    display: block;
+    margin-bottom: 8px;
+    line-height: 1.4;
+  }
+
+  .search-title:hover {
+    text-decoration: underline;
+  }
+
+  .search-snippet {
+    color: #ccc;
+    font-size: 14px;
+    line-height: 1.6;
+    margin-bottom: 8px;
+  }
+
+  .search-url {
+    color: #666;
+    font-size: 12px;
+    word-break: break-all;
+  }
+
+  :deep(.message-content) {
+    .search-result {
+      background: rgba(75, 75, 255, 0.05);
+      border: 1px solid rgba(75, 75, 255, 0.1);
+      border-radius: 8px;
+      padding: 16px;
+      margin: 12px 0;
+      transition: all 0.2s ease;
+    }
+
+    .search-result:hover {
+      background: rgba(75, 75, 255, 0.1);
+      border-color: rgba(75, 75, 255, 0.2);
+    }
+
+    .search-title {
+      color: #4b4bff;
+      font-size: 16px;
+      font-weight: 500;
+      text-decoration: none;
+      display: block;
+      margin-bottom: 8px;
+      line-height: 1.4;
+    }
+
+    .search-title:hover {
+      text-decoration: underline;
+    }
+
+    .search-snippet {
+      color: #ccc;
+      font-size: 14px;
+      line-height: 1.6;
+      margin-bottom: 8px;
+    }
+
+    .search-url {
+      color: #666;
+      font-size: 12px;
+      word-break: break-all;
+    }
+  }
+
+  /* 搜索面板样式 */
+  .search-panel {
+    width: 320px;
+    height: 100vh;
+    background: #2d2d2d;
+    border-right: 1px solid #333;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .search-panel-header {
+    padding: 16px;
+    border-bottom: 1px solid #333;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  .search-panel-header h3 {
+    color: #fff;
+    font-size: 16px;
+    margin: 0;
+  }
+
+  .close-btn {
+    background: none;
+    border: none;
+    color: #666;
+    font-size: 20px;
+    cursor: pointer;
+    padding: 4px 8px;
+  }
+
+  .close-btn:hover {
+    color: #fff;
+  }
+
+  .search-results-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px;
+  }
+
+  .search-result-item {
+    padding: 12px;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    margin-bottom: 8px;
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+  }
+
+  .search-result-item:hover {
+    background: rgba(255, 255, 255, 0.05);
+  }
+
+  .search-result-item.active {
+    background: rgba(75, 75, 255, 0.05);
+    border-color: rgba(75, 75, 255, 0.2);
+  }
+
+  .result-header {
+    cursor: pointer;
+  }
+
+  .result-source {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+
+  .source-name {
+    color: #fff;
+    font-size: 13px;
+  }
+
+  .result-date {
+    color: #666;
+    font-size: 12px;
+    margin-left: auto;
+  }
+
+  .result-title {
+    color: #fff;
+    font-size: 14px;
+    line-height: 1.4;
+    margin-bottom: 4px;
+  }
+
+  .result-content {
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+    animation: slideDown 0.2s ease;
+  }
+
+  .result-snippet {
+    color: #ccc;
+    font-size: 13px;
+    line-height: 1.6;
+    margin-bottom: 8px;
+  }
+
+  .result-link {
+    display: inline-block;
+    color: #4b4bff;
+    text-decoration: none;
+    font-size: 13px;
+    transition: all 0.2s ease;
+  }
+
+  .result-link:hover {
+    text-decoration: underline;
+  }
+
+  /* 搜索结果详情面板 */
+  .result-detail-panel {
+    flex: 1;
+    height: 100vh;
+    background: #1e1e1e;
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+  }
+
+  .detail-header {
+    padding: 16px;
+    border-bottom: 1px solid #333;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+
+  .back-btn {
+    background: none;
+    border: none;
+    color: #666;
+    font-size: 20px;
+    cursor: pointer;
+    padding: 4px 8px;
+  }
+
+  .back-btn:hover {
+    color: #fff;
+  }
+
+  .detail-header h3 {
+    color: #fff;
+    font-size: 18px;
+    margin: 0;
+    line-height: 1.4;
+  }
+
+  .detail-content {
+    padding: 24px;
+  }
+
+  .detail-meta {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    margin-bottom: 16px;
+  }
+
+  .detail-source {
+    color: #fff;
+    font-size: 14px;
+  }
+
+  .detail-date {
+    color: #666;
+    font-size: 14px;
+  }
+
+  .detail-text {
+    color: #fff;
+    font-size: 14px;
+    line-height: 1.8;
+    margin-bottom: 24px;
+  }
+
+  .detail-link {
+    display: inline-block;
+    color: #4b4bff;
+    text-decoration: none;
+    font-size: 14px;
+    padding: 8px 16px;
+    border: 1px solid #4b4bff;
+    border-radius: 4px;
+    transition: all 0.2s ease;
+  }
+
+  .detail-link:hover {
+    background: rgba(75, 75, 255, 0.1);
+  }
+
+  /* 更新搜索加载状态样式 */
+  :deep(.search-loading-container) {
+    background: rgba(75, 75, 255, 0.1);
+    border: 1px solid rgba(75, 75, 255, 0.3);
+    border-radius: 20px;
+    padding: 0px 0px;
+    margin: 12px 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    width: auto;
+  }
+
+  :deep(.search-loading-container:hover) {
+    background: rgba(75, 75, 255, 0.2);
+    border-color: rgba(75, 75, 255, 0.4);
+    transform: translateY(-1px);
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+  }
+
+  :deep(.search-loading-text) {
+    color: #4b4bff;
+    font-size: 13px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 500;
+    padding: 4px 8px;
   }
   </style>
